@@ -30,7 +30,7 @@ io.on('connection', (socket) => {
     if (!rooms[roomId]) {
       rooms[roomId] = { users: {} };
     }
-    rooms[roomId].users[socket.id] = { userName, ready: true };
+    rooms[roomId].users[socket.id] = { userName };
 
     console.log(`User ${socket.id} (${userName}) joined room: ${roomId}`);
     
@@ -56,41 +56,7 @@ io.on('connection', (socket) => {
     socket.to(targetId).emit('initial-sync', state);
   });
 
-  // GLOBAL BUFFER LOCK: A peer reports they are buffering
-  socket.on('peer-waiting', (roomId) => {
-    if (rooms[roomId] && rooms[roomId].users[socket.id]) {
-      rooms[roomId].users[socket.id].ready = false;
-      
-      if (rooms[roomId].resumeTimeout) {
-        clearTimeout(rooms[roomId].resumeTimeout);
-        rooms[roomId].resumeTimeout = null;
-      }
 
-      console.log(`User ${socket.id} is buffering in ${roomId}`);
-      io.in(roomId).emit('global-buffer-lock', socket.id);
-    }
-  });
-
-  // GLOBAL BUFFER LOCK: A peer reports they are ready
-  socket.on('peer-ready', (roomId) => {
-    if (rooms[roomId] && rooms[roomId].users[socket.id]) {
-      rooms[roomId].users[socket.id].ready = true;
-      console.log(`User ${socket.id} is ready in ${roomId}`);
-      
-      // Check if EVERYONE is ready now
-      const allReady = Object.values(rooms[roomId].users).every(u => u.ready);
-      if (allReady) {
-        if (!rooms[roomId].resumeTimeout) {
-          rooms[roomId].resumeTimeout = setTimeout(() => {
-            if (rooms[roomId]) { // Prevent crash if room is deleted during timeout
-              console.log(`All users in ${roomId} are ready. Resuming...`);
-              io.in(roomId).emit('global-buffer-resume');
-            }
-          }, 1000);
-        }
-      }
-    }
-  });
 
   const inSameRoom = (socketId, targetId) => {
     return Object.values(rooms).some(room => room.users[socketId] && room.users[targetId]);
@@ -119,15 +85,7 @@ io.on('connection', (socket) => {
         io.to(roomId).emit('user-left', socket.id);
         socket.leave(roomId);
         
-        if (rooms[roomId]) {
-           const allReady = Object.values(rooms[roomId].users).every(u => u.ready);
-           if (allReady && Object.keys(rooms[roomId].users).length > 0) {
-             io.in(roomId).emit('global-buffer-resume');
-           }
-        }
-        
         if (rooms[roomId] && Object.keys(rooms[roomId].users).length === 0) {
-          if (rooms[roomId].resumeTimeout) clearTimeout(rooms[roomId].resumeTimeout);
           delete rooms[roomId];
         }
       }
