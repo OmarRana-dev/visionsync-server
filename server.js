@@ -6,7 +6,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: '*',
+    origin: [/^chrome-extension:\/\//, 'https://visionsync-server-production.up.railway.app'],
     methods: ['GET', 'POST']
   }
 });
@@ -14,7 +14,7 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 3000;
 
 // Store room metadata
-// Room structure: { roomId: { users: { socketId: { readyState, etc } } } }
+// Room structure: { roomId: { users: { socketId: { userName, ready } } } }
 const rooms = {};
 
 io.on('connection', (socket) => {
@@ -22,6 +22,9 @@ io.on('connection', (socket) => {
 
   // When a user joins or creates a room
   socket.on('join-room', (roomId, userName) => {
+    if (typeof roomId !== 'string' || roomId.length > 50 || !roomId.startsWith('vsync-')) return;
+    if (typeof userName !== 'string' || userName.length > 30) return;
+
     socket.join(roomId);
     
     if (!rooms[roomId]) {
@@ -40,41 +43,105 @@ io.on('connection', (socket) => {
       .map((id) => ({ id, userName: rooms[roomId].users[id].userName }));
       
     socket.emit('room-users', existingUsers);
+
+    // INITIAL SYNC: If there are others, ask the first one for the state
+    if (existingUsers.length > 0) {
+      const hostId = existingUsers[0].id; // The first in the list
+      socket.to(hostId).emit('request-host-state', socket.id);
+    }
   });
+
+  // Host sends their current state to the newcomer
+  socket.on('send-state-to-peer', (targetId, state) => {
+    socket.to(targetId).emit('initial-sync', state);
+  });
+
+  // GLOBAL BUFFER LOCK: A peer reports they are buffering
+  socket.on('peer-waiting', (roomId) => {
+    if (rooms[roomId] && rooms[roomId].users[socket.id]) {
+      rooms[roomId].users[socket.id].ready = false;
+      
+      if (rooms[roomId].resumeTimeout) {
+        clearTimeout(rooms[roomId].resumeTimeout);
+        rooms[roomId].resumeTimeout = null;
+      }
+
+      console.log(`User ${socket.id} is buffering in ${roomId}`);
+      io.in(roomId).emit('global-buffer-lock', socket.id);
+    }
+  });
+
+  // GLOBAL BUFFER LOCK: A peer reports they are ready
+  socket.on('peer-ready', (roomId) => {
+    if (rooms[roomId] && rooms[roomId].users[socket.id]) {
+      rooms[roomId].users[socket.id].ready = true;
+      console.log(`User ${socket.id} is ready in ${roomId}`);
+      
+      // Check if EVERYONE is ready now
+      const allReady = Object.values(rooms[roomId].users).every(u => u.ready);
+      if (allReady) {
+        if (!rooms[roomId].resumeTimeout) {
+          rooms[roomId].resumeTimeout = setTimeout(() => {
+            if (rooms[roomId]) { // Prevent crash if room is deleted during timeout
+              console.log(`All users in ${roomId} are ready. Resuming...`);
+              io.in(roomId).emit('global-buffer-resume');
+            }
+          }, 1000);
+        }
+      }
+    }
+  });
+
+  const inSameRoom = (socketId, targetId) => {
+    return Object.values(rooms).some(room => room.users[socketId] && room.users[targetId]);
+  };
 
   // WebRTC Signaling: Offer
   socket.on('signal-offer', (targetId, offer) => {
-    socket.to(targetId).emit('signal-offer', socket.id, offer);
+    if (inSameRoom(socket.id, targetId)) socket.to(targetId).emit('signal-offer', socket.id, offer);
   });
 
   // WebRTC Signaling: Answer
   socket.on('signal-answer', (targetId, answer) => {
-    socket.to(targetId).emit('signal-answer', socket.id, answer);
+    if (inSameRoom(socket.id, targetId)) socket.to(targetId).emit('signal-answer', socket.id, answer);
   });
 
   // WebRTC Signaling: ICE Candidate
   socket.on('signal-ice-candidate', (targetId, candidate) => {
-    socket.to(targetId).emit('signal-ice-candidate', socket.id, candidate);
+    if (inSameRoom(socket.id, targetId)) socket.to(targetId).emit('signal-ice-candidate', socket.id, candidate);
   });
 
-  // Disconnect handler
-  socket.on('disconnect', () => {
-    console.log(`User disconnected: ${socket.id}`);
-    
-    // Clean up room state and notify others
+  const handleUserLeave = (socket) => {
     for (const roomId in rooms) {
       if (rooms[roomId].users[socket.id]) {
         delete rooms[roomId].users[socket.id];
         
-        // Notify others
-        socket.to(roomId).emit('user-left', socket.id);
+        io.to(roomId).emit('user-left', socket.id);
+        socket.leave(roomId);
         
-        // Cleanup empty rooms
-        if (Object.keys(rooms[roomId].users).length === 0) {
+        if (rooms[roomId]) {
+           const allReady = Object.values(rooms[roomId].users).every(u => u.ready);
+           if (allReady && Object.keys(rooms[roomId].users).length > 0) {
+             io.in(roomId).emit('global-buffer-resume');
+           }
+        }
+        
+        if (rooms[roomId] && Object.keys(rooms[roomId].users).length === 0) {
+          if (rooms[roomId].resumeTimeout) clearTimeout(rooms[roomId].resumeTimeout);
           delete rooms[roomId];
         }
       }
     }
+  };
+
+  socket.on('disconnect', () => {
+    console.log(`User disconnected: ${socket.id}`);
+    handleUserLeave(socket);
+  });
+
+  socket.on('leave-room', () => {
+    console.log(`User left room explicitly: ${socket.id}`);
+    handleUserLeave(socket);
   });
 });
 
