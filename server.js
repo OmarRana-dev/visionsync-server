@@ -21,9 +21,20 @@ io.on('connection', (socket) => {
   console.log(`User connected: ${socket.id}`);
 
   // When a user joins or creates a room
-  socket.on('join-room', (roomId, userName) => {
-    if (typeof roomId !== 'string' || roomId.length > 50 || !roomId.startsWith('vsync-')) return;
-    if (typeof userName !== 'string' || userName.length > 30) return;
+  socket.on('join-room', (roomId, userName, options = {}, callback) => {
+    if (typeof roomId !== 'string' || roomId.length > 50 || !roomId.startsWith('vsync-')) {
+       if (typeof callback === 'function') callback({ error: 'Invalid room format' });
+       return;
+    }
+    if (typeof userName !== 'string' || userName.length > 30) {
+       if (typeof callback === 'function') callback({ error: 'Invalid username' });
+       return;
+    }
+
+    if (!options.isCreate && !rooms[roomId]) {
+       if (typeof callback === 'function') callback({ error: 'Room does not exist! Please check the link or code.' });
+       return;
+    }
 
     socket.join(roomId);
     
@@ -67,6 +78,8 @@ io.on('connection', (socket) => {
       const hostId = existingUsers[0].id; // The first in the list
       socket.to(hostId).emit('request-host-state', socket.id);
     }
+    
+    if (typeof callback === 'function') callback({ success: true });
   });
 
   // Host sends their current state to the newcomer
