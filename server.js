@@ -30,23 +30,24 @@ io.on('connection', (socket) => {
     if (!rooms[roomId]) {
       rooms[roomId] = { users: {} };
     } else {
-      // PROACTIVE CLEANUP: Check if this user name is already in the room under a different ID
-      // This happens during network drops and quick re-joins, causing "double" user tags.
+      // PROACTIVE CLEANUP: Zombie Session & Mesh Repair
       Object.keys(rooms[roomId].users).forEach(oldId => {
         if (rooms[roomId].users[oldId].userName === userName && oldId !== socket.id) {
-          console.log(`[VisionSync Server] Cleaning up stale user ${userName} (oldId: ${oldId})`);
+          console.log(`[VisionSync Server] Cleaning up stale session for ${userName} (oldId: ${oldId})`);
           const oldSocket = io.sockets.sockets.get(oldId);
           if (oldSocket) {
-            handleUserLeave(oldSocket, true);
             oldSocket.leave(roomId);
-          } else {
-            // If the socket object is already gone, just manually delete and notify silently
-            delete rooms[roomId].users[oldId];
-            io.to(roomId).emit('user-left', oldId, true);
           }
+          delete rooms[roomId].users[oldId];
+          socket.to(roomId).emit('user-left', oldId);
+        } else if (oldId === socket.id) {
+          // Seamless Socket.IO reconnect: Force clients to tear down broken P2P tunnels
+          socket.to(roomId).emit('user-left', oldId);
         }
       });
     }
+
+    if (!rooms[roomId]) rooms[roomId] = { users: {} };
     rooms[roomId].users[socket.id] = { userName };
 
     console.log(`User ${socket.id} (${userName}) joined room: ${roomId}`);
@@ -94,12 +95,12 @@ io.on('connection', (socket) => {
     if (inSameRoom(socket.id, targetId)) socket.to(targetId).emit('signal-ice-candidate', socket.id, candidate);
   });
 
-  const handleUserLeave = (socket, isSilent = false) => {
+  const handleUserLeave = (socket) => {
     for (const roomId in rooms) {
       if (rooms[roomId].users[socket.id]) {
         delete rooms[roomId].users[socket.id];
         
-        io.to(roomId).emit('user-left', socket.id, isSilent);
+        io.to(roomId).emit('user-left', socket.id);
         socket.leave(roomId);
         
         if (rooms[roomId] && Object.keys(rooms[roomId].users).length === 0) {
