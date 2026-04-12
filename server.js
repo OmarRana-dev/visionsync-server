@@ -37,12 +37,12 @@ io.on('connection', (socket) => {
           console.log(`[VisionSync Server] Cleaning up stale user ${userName} (oldId: ${oldId})`);
           const oldSocket = io.sockets.sockets.get(oldId);
           if (oldSocket) {
-            handleUserLeave(oldSocket);
+            handleUserLeave(oldSocket, true);
             oldSocket.leave(roomId);
           } else {
-            // If the socket object is already gone, just manually delete and notify
+            // If the socket object is already gone, just manually delete and notify silently
             delete rooms[roomId].users[oldId];
-            io.to(roomId).emit('user-left', oldId);
+            io.to(roomId).emit('user-left', oldId, true);
           }
         }
       });
@@ -94,12 +94,12 @@ io.on('connection', (socket) => {
     if (inSameRoom(socket.id, targetId)) socket.to(targetId).emit('signal-ice-candidate', socket.id, candidate);
   });
 
-  const handleUserLeave = (socket) => {
+  const handleUserLeave = (socket, isSilent = false) => {
     for (const roomId in rooms) {
       if (rooms[roomId].users[socket.id]) {
         delete rooms[roomId].users[socket.id];
         
-        io.to(roomId).emit('user-left', socket.id);
+        io.to(roomId).emit('user-left', socket.id, isSilent);
         socket.leave(roomId);
         
         if (rooms[roomId] && Object.keys(rooms[roomId].users).length === 0) {
