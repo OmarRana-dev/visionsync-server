@@ -29,6 +29,23 @@ io.on('connection', (socket) => {
     
     if (!rooms[roomId]) {
       rooms[roomId] = { users: {} };
+    } else {
+      // PROACTIVE CLEANUP: Check if this user name is already in the room under a different ID
+      // This happens during network drops and quick re-joins, causing "double" user tags.
+      Object.keys(rooms[roomId].users).forEach(oldId => {
+        if (rooms[roomId].users[oldId].userName === userName && oldId !== socket.id) {
+          console.log(`[VisionSync Server] Cleaning up stale user ${userName} (oldId: ${oldId})`);
+          const oldSocket = io.sockets.sockets.get(oldId);
+          if (oldSocket) {
+            handleUserLeave(oldSocket);
+            oldSocket.leave(roomId);
+          } else {
+            // If the socket object is already gone, just manually delete and notify
+            delete rooms[roomId].users[oldId];
+            io.to(roomId).emit('user-left', oldId);
+          }
+        }
+      });
     }
     rooms[roomId].users[socket.id] = { userName };
 
