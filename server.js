@@ -37,6 +37,13 @@ io.on('connection', (socket) => {
     // Tell the new user the current state of the movie
     socket.emit('room-state', rooms[roomId].state);
 
+    // Send existing users list to the newcomer
+    const existingUsers = {};
+    Object.keys(rooms[roomId].users).forEach(id => {
+      if (id !== socket.id) existingUsers[id] = rooms[roomId].users[id].userName;
+    });
+    socket.emit('existing-users', existingUsers);
+
     // Notify others
     socket.to(roomId).emit('user-joined', { socketId: socket.id, userName });
     console.log(`${userName} joined ${roomId}`);
