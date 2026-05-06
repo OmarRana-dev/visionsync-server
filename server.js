@@ -13,127 +13,81 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 3000;
 
-// Store room metadata
-// Room structure: { roomId: { users: { socketId: { userName, ready } } } }
+// Room structure: { roomId: { users: { socketId: { userName } }, state: { currentTime, isPlaying, lastUpdated } } }
 const rooms = {};
 
 io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  console.log('User connected:', socket.id);
 
-  // When a user joins or creates a room
-  socket.on('join-room', (roomId, userName, options = {}, callback) => {
-    if (typeof roomId !== 'string' || roomId.length > 50 || !roomId.startsWith('vsync-')) {
-      if (typeof callback === 'function') callback({ error: 'Invalid room format' });
-      return;
-    }
-    if (typeof userName !== 'string' || userName.length > 30) {
-      if (typeof callback === 'function') callback({ error: 'Invalid username' });
-      return;
-    }
+  // Heartbeat to keep Render awake
+  socket.on('ping', () => socket.emit('pong'));
 
-    if (!options.isCreate && !rooms[roomId]) {
-      if (typeof callback === 'function') callback({ error: 'Room does not exist! Please check the link or code.' });
-      return;
-    }
-
+  socket.on('join-room', (roomId, userName) => {
     socket.join(roomId);
-
+    
     if (!rooms[roomId]) {
-      rooms[roomId] = { users: {} };
-    } else {
-      // PROACTIVE CLEANUP: Zombie Session & Mesh Repair
-      Object.keys(rooms[roomId].users).forEach(oldId => {
-        if (rooms[roomId].users[oldId].userName === userName && oldId !== socket.id) {
-          console.log(`[VisionSync Server] Cleaning up stale session for ${userName} (oldId: ${oldId})`);
-          const oldSocket = io.sockets.sockets.get(oldId);
-          if (oldSocket) {
-            oldSocket.leave(roomId);
-          }
-          delete rooms[roomId].users[oldId];
-          socket.to(roomId).emit('user-left', oldId);
-        } else if (oldId === socket.id) {
-          // Seamless Socket.IO reconnect: Force clients to tear down broken P2P tunnels
-          socket.to(roomId).emit('user-left', oldId);
-        }
-      });
+      rooms[roomId] = {
+        users: {},
+        state: { currentTime: 0, isPlaying: false, lastUpdated: Date.now() }
+      };
     }
 
-    if (!rooms[roomId]) rooms[roomId] = { users: {} };
     rooms[roomId].users[socket.id] = { userName };
+    
+    // Tell the new user the current state of the movie
+    socket.emit('room-state', rooms[roomId].state);
 
-    console.log(`User ${socket.id} (${userName}) joined room: ${roomId}`);
+    // Notify others
+    socket.to(roomId).emit('user-joined', { socketId: socket.id, userName });
+    console.log(`${userName} joined ${roomId}`);
+  });
 
-    // Notify others in the room
-    socket.to(roomId).emit('user-joined', socket.id, userName);
-
-    // Send the list of existing users to the new user
-    const existingUsers = Object.keys(rooms[roomId].users)
-      .filter((id) => id !== socket.id)
-      .map((id) => ({ id, userName: rooms[roomId].users[id].userName }));
-
-    socket.emit('room-users', existingUsers);
-
-    // INITIAL SYNC: If there are others, ask the first one for the state
-    if (existingUsers.length > 0) {
-      const hostId = existingUsers[0].id; // The first in the list
-      socket.to(hostId).emit('request-host-state', socket.id);
+  // HIGH-SPEED SYNC: Broadcast play/pause/seek to everyone in the room
+  socket.on('playback-sync', (data) => {
+    const { roomId, type, time, isPlaying } = data;
+    if (rooms[roomId]) {
+      rooms[roomId].state = { currentTime: time, isPlaying, lastUpdated: Date.now() };
+      // Broadcast to EVERYONE else in the room
+      socket.to(roomId).emit('playback-sync', data);
     }
-
-    if (typeof callback === 'function') callback({ success: true });
   });
 
-  // Host sends their current state to the newcomer
-  socket.on('send-state-to-peer', (targetId, state) => {
-    socket.to(targetId).emit('initial-sync', state);
+  // SERVER-SIDE CHAT: Much more stable than P2P for groups
+  socket.on('chat-message', (data) => {
+    const { roomId, text, sender } = data;
+    socket.to(roomId).emit('chat-message', data);
   });
 
-
-
-  const inSameRoom = (socketId, targetId) => {
-    return Object.values(rooms).some(room => room.users[socketId] && room.users[targetId]);
-  };
-
-  // WebRTC Signaling: Offer
-  socket.on('signal-offer', (targetId, offer) => {
-    if (inSameRoom(socket.id, targetId)) socket.to(targetId).emit('signal-offer', socket.id, offer);
+  // EMOJI REACTIONS
+  socket.on('emoji-reaction', (data) => {
+    const { roomId, emoji } = data;
+    socket.to(roomId).emit('emoji-reaction', data);
   });
 
-  // WebRTC Signaling: Answer
-  socket.on('signal-answer', (targetId, answer) => {
-    if (inSameRoom(socket.id, targetId)) socket.to(targetId).emit('signal-answer', socket.id, answer);
-  });
-
-  // WebRTC Signaling: ICE Candidate
-  socket.on('signal-ice-candidate', (targetId, candidate) => {
-    if (inSameRoom(socket.id, targetId)) socket.to(targetId).emit('signal-ice-candidate', socket.id, candidate);
-  });
-
-  const handleUserLeave = (socket) => {
-    for (const roomId in rooms) {
-      if (rooms[roomId].users[socket.id]) {
+  socket.on('disconnecting', () => {
+    for (const roomId of socket.rooms) {
+      if (rooms[roomId] && rooms[roomId].users[socket.id]) {
+        const userName = rooms[roomId].users[socket.id].userName;
         delete rooms[roomId].users[socket.id];
-
-        io.to(roomId).emit('user-left', socket.id);
-        socket.leave(roomId);
-
-        if (rooms[roomId] && Object.keys(rooms[roomId].users).length === 0) {
+        socket.to(roomId).emit('user-left', { socketId: socket.id, userName });
+        
+        // Cleanup empty rooms
+        if (Object.keys(rooms[roomId].users).length === 0) {
           delete rooms[roomId];
         }
       }
     }
-  };
-
-  socket.on('disconnect', () => {
-    console.log(`User disconnected: ${socket.id}`);
-    handleUserLeave(socket);
   });
 
-  socket.on('leave-room', () => {
-    console.log(`User left room explicitly: ${socket.id}`);
-    handleUserLeave(socket);
+  socket.on('disconnect', () => {
+    console.log('User disconnected:', socket.id);
   });
 });
 
+app.get('/', (req, res) => {
+  res.send('VisionSync Signaling Server is Running');
+});
+
 server.listen(PORT, () => {
-  console.log(`VisionSync Elite Signaling Server running on port ${PORT}`);
+  console.log(`Server is running on port ${PORT}`);
 });
