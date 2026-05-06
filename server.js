@@ -22,7 +22,13 @@ io.on('connection', (socket) => {
   // Heartbeat to keep Render awake
   socket.on('ping', () => socket.emit('pong'));
 
-  socket.on('join-room', (roomId, userName) => {
+  socket.on('join-room', (roomId, userName, options = {}, callback) => {
+    // If it's a JOIN request (not create) and room doesn't exist, block it
+    if (!options.isCreate && !rooms[roomId]) {
+      if (typeof callback === 'function') callback({ error: 'Room does not exist!' });
+      return;
+    }
+
     socket.join(roomId);
     
     if (!rooms[roomId]) {
@@ -46,16 +52,23 @@ io.on('connection', (socket) => {
 
     // Notify others
     socket.to(roomId).emit('user-joined', { socketId: socket.id, userName });
-    console.log(`${userName} joined ${roomId}`);
+    
+    if (typeof callback === 'function') callback({ success: true });
+    console.log(`${userName} joined ${roomId} (isCreate: ${!!options.isCreate})`);
   });
 
-  // HIGH-SPEED SYNC: Broadcast play/pause/seek to everyone in the room
+  // HIGH-SPEED SYNC: Now includes a server-side timestamp for latency compensation
   socket.on('playback-sync', (data) => {
     const { roomId, type, time, isPlaying } = data;
     if (rooms[roomId]) {
-      rooms[roomId].state = { currentTime: time, isPlaying, lastUpdated: Date.now() };
-      // Broadcast to EVERYONE else in the room
-      socket.to(roomId).emit('playback-sync', data);
+      rooms[roomId].state = { 
+        currentTime: time, 
+        isPlaying, 
+        lastUpdated: Date.now(),
+        serverTimestamp: Date.now() // Attach server time for sync calculation
+      };
+      // Relay with the server timestamp
+      socket.to(roomId).emit('playback-sync', { ...data, serverTimestamp: Date.now() });
     }
   });
 
