@@ -6,7 +6,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: [/^chrome-extension:\/\//, 'https://visionsync-server-production.up.railway.app'],
+    origin: [/^chrome-extension:\/\//, 'https://visionsync-server.onrender.com'],
     methods: ['GET', 'POST']
   }
 });
@@ -23,21 +23,21 @@ io.on('connection', (socket) => {
   // When a user joins or creates a room
   socket.on('join-room', (roomId, userName, options = {}, callback) => {
     if (typeof roomId !== 'string' || roomId.length > 50 || !roomId.startsWith('vsync-')) {
-       if (typeof callback === 'function') callback({ error: 'Invalid room format' });
-       return;
+      if (typeof callback === 'function') callback({ error: 'Invalid room format' });
+      return;
     }
     if (typeof userName !== 'string' || userName.length > 30) {
-       if (typeof callback === 'function') callback({ error: 'Invalid username' });
-       return;
+      if (typeof callback === 'function') callback({ error: 'Invalid username' });
+      return;
     }
 
     if (!options.isCreate && !rooms[roomId]) {
-       if (typeof callback === 'function') callback({ error: 'Room does not exist! Please check the link or code.' });
-       return;
+      if (typeof callback === 'function') callback({ error: 'Room does not exist! Please check the link or code.' });
+      return;
     }
 
     socket.join(roomId);
-    
+
     if (!rooms[roomId]) {
       rooms[roomId] = { users: {} };
     } else {
@@ -62,7 +62,7 @@ io.on('connection', (socket) => {
     rooms[roomId].users[socket.id] = { userName };
 
     console.log(`User ${socket.id} (${userName}) joined room: ${roomId}`);
-    
+
     // Notify others in the room
     socket.to(roomId).emit('user-joined', socket.id, userName);
 
@@ -70,7 +70,7 @@ io.on('connection', (socket) => {
     const existingUsers = Object.keys(rooms[roomId].users)
       .filter((id) => id !== socket.id)
       .map((id) => ({ id, userName: rooms[roomId].users[id].userName }));
-      
+
     socket.emit('room-users', existingUsers);
 
     // INITIAL SYNC: If there are others, ask the first one for the state
@@ -78,7 +78,7 @@ io.on('connection', (socket) => {
       const hostId = existingUsers[0].id; // The first in the list
       socket.to(hostId).emit('request-host-state', socket.id);
     }
-    
+
     if (typeof callback === 'function') callback({ success: true });
   });
 
@@ -112,10 +112,10 @@ io.on('connection', (socket) => {
     for (const roomId in rooms) {
       if (rooms[roomId].users[socket.id]) {
         delete rooms[roomId].users[socket.id];
-        
+
         io.to(roomId).emit('user-left', socket.id);
         socket.leave(roomId);
-        
+
         if (rooms[roomId] && Object.keys(rooms[roomId].users).length === 0) {
           delete rooms[roomId];
         }
