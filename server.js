@@ -23,6 +23,8 @@ io.on('connection', (socket) => {
   socket.on('ping', () => socket.emit('pong'));
 
   socket.on('join-room', (roomId, userName, options = {}, callback) => {
+    const sessionId = options.sessionId || socket.id;
+
     // If it's a JOIN request (not create) and room doesn't exist, block it
     if (!options.isCreate && !rooms[roomId]) {
       if (typeof callback === 'function') callback({ error: 'Room does not exist!' });
@@ -35,22 +37,36 @@ io.on('connection', (socket) => {
       rooms[roomId] = {
         users: {},
         state: { currentTime: 0, isPlaying: false, lastUpdated: Date.now() },
-        hostName: userName // The first person to join/create is the host
+        hostName: userName,
+        hostSessionId: sessionId
       };
     }
     
-    // If room exists but host is missing (e.g. server restart), assign first joiner
-    if (!rooms[roomId].hostName) rooms[roomId].hostName = userName;
+    // Auto-restore host if sessionId matches
+    if (rooms[roomId].hostSessionId === sessionId) {
+       rooms[roomId].hostName = userName; // Update name if changed
+    }
 
-    rooms[roomId].users[socket.id] = { userName };
+    // Store user by sessionId to persist across reconnects
+    rooms[roomId].users[sessionId] = { 
+      userName, 
+      socketId: socket.id,
+      lastSeen: Date.now()
+    };
     
+    // Map socket to session for easy lookup on disconnect
+    socket.sessionId = sessionId;
+    socket.currentRoom = roomId;
+
     // Tell the new user the current state of the movie
     socket.emit('room-state', rooms[roomId].state);
 
-    // Send existing users list to the newcomer
+    // Send existing users list
     const existingUsers = {};
-    Object.keys(rooms[roomId].users).forEach(id => {
-      if (id !== socket.id) existingUsers[id] = rooms[roomId].users[id].userName;
+    Object.keys(rooms[roomId].users).forEach(sId => {
+      if (sId !== sessionId) {
+        existingUsers[rooms[roomId].users[sId].socketId] = rooms[roomId].users[sId].userName;
+      }
     });
     socket.emit('existing-users', existingUsers);
 
@@ -58,7 +74,7 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('user-joined', { socketId: socket.id, userName });
     
     if (typeof callback === 'function') callback({ success: true });
-    console.log(`${userName} joined ${roomId} (isCreate: ${!!options.isCreate})`);
+    console.log(`${userName} joined ${roomId} (Session: ${sessionId})`);
   });
 
   // HIGH-SPEED SYNC: Now includes a server-side timestamp for latency compensation
@@ -122,15 +138,26 @@ io.on('connection', (socket) => {
   });
 
   const handleUserLeave = (roomId) => {
-    if (rooms[roomId] && rooms[roomId].users[socket.id]) {
-      const userName = rooms[roomId].users[socket.id].userName;
-      delete rooms[roomId].users[socket.id];
-      socket.to(roomId).emit('user-left', { socketId: socket.id, userName });
-      console.log(`${userName} left ${roomId}`);
+    const sessionId = socket.sessionId;
+    if (rooms[roomId] && rooms[roomId].users[sessionId]) {
+      const userName = rooms[roomId].users[sessionId].userName;
       
-      if (Object.keys(rooms[roomId].users).length === 0) {
-        delete rooms[roomId];
-      }
+      // We don't delete immediately to allow for short reconnects
+      setTimeout(() => {
+        if (rooms[roomId] && rooms[roomId].users[sessionId]) {
+          // Check if they reconnected with a new socketId
+          const currentUser = rooms[roomId].users[sessionId];
+          if (currentUser.socketId === socket.id) {
+             delete rooms[roomId].users[sessionId];
+             socket.to(roomId).emit('user-left', { socketId: socket.id, userName });
+             console.log(`${userName} left ${roomId} (Session ended)`);
+             
+             if (Object.keys(rooms[roomId].users).length === 0) {
+               delete rooms[roomId];
+             }
+          }
+        }
+      }, 5000); // 5 second grace period for reconnects
     }
   };
 
