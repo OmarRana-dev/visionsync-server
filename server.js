@@ -101,6 +101,18 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('delete-message', data);
   });
 
+  // FETCH ACTIVE ROOMS
+  socket.on('get-active-rooms', (callback) => {
+    const activeRooms = [];
+    for (const rId in rooms) {
+      const userCount = Object.keys(rooms[rId].users).length;
+      if (userCount > 0) {
+        activeRooms.push({ id: rId, users: userCount });
+      }
+    }
+    if (typeof callback === 'function') callback(activeRooms);
+  });
+
   const handleUserLeave = (roomId) => {
     if (rooms[roomId] && rooms[roomId].users[socket.id]) {
       const userName = rooms[roomId].users[socket.id].userName;
