@@ -34,9 +34,13 @@ io.on('connection', (socket) => {
     if (!rooms[roomId]) {
       rooms[roomId] = {
         users: {},
-        state: { currentTime: 0, isPlaying: false, lastUpdated: Date.now() }
+        state: { currentTime: 0, isPlaying: false, lastUpdated: Date.now() },
+        hostName: userName // The first person to join/create is the host
       };
     }
+    
+    // If room exists but host is missing (e.g. server restart), assign first joiner
+    if (!rooms[roomId].hostName) rooms[roomId].hostName = userName;
 
     rooms[roomId].users[socket.id] = { userName };
     
@@ -107,7 +111,11 @@ io.on('connection', (socket) => {
     for (const rId in rooms) {
       const userCount = Object.keys(rooms[rId].users).length;
       if (userCount > 0) {
-        activeRooms.push({ id: rId, users: userCount });
+        activeRooms.push({ 
+          id: rId, 
+          users: userCount,
+          host: rooms[rId].hostName || 'Anonymous' 
+        });
       }
     }
     if (typeof callback === 'function') callback(activeRooms);
