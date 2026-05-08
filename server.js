@@ -80,7 +80,8 @@ io.on('connection', (socket) => {
   // SERVER-SIDE CHAT: Much more stable than P2P for groups
   socket.on('chat-message', (data) => {
     const { roomId, text, sender } = data;
-    socket.to(roomId).emit('chat-message', data);
+    // Include senderId to prevent duplicates on client side
+    socket.to(roomId).emit('chat-message', { ...data, senderId: socket.id });
   });
 
   // EMOJI REACTIONS
