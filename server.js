@@ -96,6 +96,11 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('message-reaction', data);
   });
 
+  socket.on('delete-message', (data) => {
+    const { roomId } = data;
+    socket.to(roomId).emit('delete-message', data);
+  });
+
   const handleUserLeave = (roomId) => {
     if (rooms[roomId] && rooms[roomId].users[socket.id]) {
       const userName = rooms[roomId].users[socket.id].userName;
