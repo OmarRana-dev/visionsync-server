@@ -59,16 +59,21 @@ io.on('connection', (socket) => {
 
   // HIGH-SPEED SYNC: Now includes a server-side timestamp for latency compensation
   socket.on('playback-sync', (data) => {
-    const { roomId, type, time, isPlaying } = data;
+    const { roomId, type, time, isPlaying, playbackRate } = data;
     if (rooms[roomId]) {
       rooms[roomId].state = { 
         currentTime: time, 
         isPlaying, 
+        playbackRate: playbackRate || rooms[roomId].state.playbackRate || 1,
         lastUpdated: Date.now(),
         serverTimestamp: Date.now() // Attach server time for sync calculation
       };
-      // Relay with the server timestamp
-      socket.to(roomId).emit('playback-sync', { ...data, serverTimestamp: Date.now() });
+      // Relay with the server timestamp and sender ID (for "Waiting for..." notification)
+      socket.to(roomId).emit('playback-sync', { 
+        ...data, 
+        serverTimestamp: Date.now(),
+        socketId: socket.id 
+      });
     }
   });
 
@@ -84,18 +89,27 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('emoji-reaction', data);
   });
 
+  const handleUserLeave = (roomId) => {
+    if (rooms[roomId] && rooms[roomId].users[socket.id]) {
+      const userName = rooms[roomId].users[socket.id].userName;
+      delete rooms[roomId].users[socket.id];
+      socket.to(roomId).emit('user-left', { socketId: socket.id, userName });
+      console.log(`${userName} left ${roomId}`);
+      
+      if (Object.keys(rooms[roomId].users).length === 0) {
+        delete rooms[roomId];
+      }
+    }
+  };
+
+  socket.on('leave-room', (roomId) => {
+    handleUserLeave(roomId);
+    socket.leave(roomId);
+  });
+
   socket.on('disconnecting', () => {
     for (const roomId of socket.rooms) {
-      if (rooms[roomId] && rooms[roomId].users[socket.id]) {
-        const userName = rooms[roomId].users[socket.id].userName;
-        delete rooms[roomId].users[socket.id];
-        socket.to(roomId).emit('user-left', { socketId: socket.id, userName });
-        
-        // Cleanup empty rooms
-        if (Object.keys(rooms[roomId].users).length === 0) {
-          delete rooms[roomId];
-        }
-      }
+      handleUserLeave(roomId);
     }
   });
 
