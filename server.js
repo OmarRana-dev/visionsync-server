@@ -89,6 +89,12 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('emoji-reaction', data);
   });
 
+  // MESSAGE-SPECIFIC REACTIONS
+  socket.on('message-reaction', (data) => {
+    const { roomId } = data;
+    socket.to(roomId).emit('message-reaction', data);
+  });
+
   const handleUserLeave = (roomId) => {
     if (rooms[roomId] && rooms[roomId].users[socket.id]) {
       const userName = rooms[roomId].users[socket.id].userName;
