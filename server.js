@@ -42,6 +42,14 @@ io.on('connection', (socket) => {
       };
     }
     
+    // IF SESSION ALREADY EXISTS: Clean up the old socket connection immediately
+    if (rooms[roomId].users[sessionId]) {
+      const oldSocketId = rooms[roomId].users[sessionId].socketId;
+      if (oldSocketId !== socket.id) {
+        socket.to(roomId).emit('user-left', { socketId: oldSocketId, userName });
+      }
+    }
+
     // Auto-restore host if sessionId matches
     if (rooms[roomId].hostSessionId === sessionId) {
        rooms[roomId].hostName = userName; // Update name if changed
@@ -142,22 +150,17 @@ io.on('connection', (socket) => {
     if (rooms[roomId] && rooms[roomId].users[sessionId]) {
       const userName = rooms[roomId].users[sessionId].userName;
       
-      // We don't delete immediately to allow for short reconnects
-      setTimeout(() => {
-        if (rooms[roomId] && rooms[roomId].users[sessionId]) {
-          // Check if they reconnected with a new socketId
-          const currentUser = rooms[roomId].users[sessionId];
-          if (currentUser.socketId === socket.id) {
-             delete rooms[roomId].users[sessionId];
-             socket.to(roomId).emit('user-left', { socketId: socket.id, userName });
-             console.log(`${userName} left ${roomId} (Session ended)`);
-             
-             if (Object.keys(rooms[roomId].users).length === 0) {
-               delete rooms[roomId];
-             }
-          }
-        }
-      }, 5000); // 5 second grace period for reconnects
+      // Ensure we only delete if this is the ACTIVE socket for this session
+      const currentUser = rooms[roomId].users[sessionId];
+      if (currentUser.socketId === socket.id) {
+         delete rooms[roomId].users[sessionId];
+         socket.to(roomId).emit('user-left', { socketId: socket.id, userName });
+         console.log(`${userName} left ${roomId}`);
+         
+         if (Object.keys(rooms[roomId].users).length === 0) {
+           delete rooms[roomId];
+         }
+      }
     }
   };
 
