@@ -8,7 +8,10 @@ const io = new Server(server, {
   cors: {
     origin: [/^chrome-extension:\/\//, 'https://visionsync-server.onrender.com'],
     methods: ['GET', 'POST']
-  }
+  },
+  pingInterval: 20000,
+  pingTimeout: 10000,
+  allowEIO3: true // Support for older clients if needed
 });
 
 const PORT = process.env.PORT || 3000;
@@ -33,6 +36,13 @@ io.on('connection', (socket) => {
 
     socket.join(roomId);
     
+    // Cancel cleanup timer if it exists
+    if (roomCleanupTimers[roomId]) {
+      clearTimeout(roomCleanupTimers[roomId]);
+      delete roomCleanupTimers[roomId];
+      console.log(`Room ${roomId} cleanup cancelled - user joined.`);
+    }
+
     if (!rooms[roomId]) {
       rooms[roomId] = {
         users: {},
@@ -145,6 +155,8 @@ io.on('connection', (socket) => {
     if (typeof callback === 'function') callback(activeRooms);
   });
 
+  const roomCleanupTimers = {};
+
   const handleUserLeave = (roomId) => {
     const sessionId = socket.sessionId;
     if (rooms[roomId] && rooms[roomId].users[sessionId]) {
@@ -157,8 +169,17 @@ io.on('connection', (socket) => {
          socket.to(roomId).emit('user-left', { socketId: socket.id, userName });
          console.log(`${userName} left ${roomId}`);
          
+         // ROOM PERSISTENCE: If room is empty, don't delete immediately. 
+         // Wait 5 minutes to allow for host/users to reconnect.
          if (Object.keys(rooms[roomId].users).length === 0) {
-           delete rooms[roomId];
+           console.log(`Room ${roomId} is empty. Starting 5-minute cleanup timer.`);
+           roomCleanupTimers[roomId] = setTimeout(() => {
+             if (rooms[roomId] && Object.keys(rooms[roomId].users).length === 0) {
+               delete rooms[roomId];
+               delete roomCleanupTimers[roomId];
+               console.log(`Room ${roomId} deleted after 5 minutes of inactivity.`);
+             }
+           }, 5 * 60 * 1000); // 5 minutes
          }
       }
     }
